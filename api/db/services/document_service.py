@@ -266,6 +266,7 @@ class DocumentService(CommonService):
     @classmethod
     @DB.connection_context()
     def get_unfinished_docs(cls):
+        # 获取未完成的文档，包括正在解析的文档和解析失败的文档
         fields = [cls.model.id, cls.model.process_begin_at, cls.model.parser_config, cls.model.progress_msg,
                   cls.model.run, cls.model.parser_id]
         docs = cls.model.select(*fields) \
@@ -531,6 +532,7 @@ class DocumentService(CommonService):
     @classmethod
     @DB.connection_context()
     def update_progress(cls):
+        # 获取未完成的文档，包括正在解析的文档和解析失败的文档
         docs = cls.get_unfinished_docs()
         for d in docs:
             try:
@@ -564,9 +566,11 @@ class DocumentService(CommonService):
                     prg = -1
                     status = TaskStatus.FAIL.value
                 elif finished:
+                    # 如果文档的解析器配置中包含raptor，并且没有raptor任务，则创建raptor任务
                     if (d["parser_config"].get("raptor") or {}).get("use_raptor") and not has_raptor:
                         queue_raptor_o_graphrag_tasks(d, "raptor", priority)
                         prg = 0.98 * len(tsks) / (len(tsks) + 1)
+                    # 如果文档的解析器配置中包含graphrag，并且没有graphrag任务，则创建graphrag任务
                     elif (d["parser_config"].get("graphrag") or {}).get("use_graphrag") and not has_graphrag:
                         queue_raptor_o_graphrag_tasks(d, "graphrag", priority)
                         prg = 0.98 * len(tsks) / (len(tsks) + 1)
@@ -610,6 +614,7 @@ class DocumentService(CommonService):
 
 
 def queue_raptor_o_graphrag_tasks(doc, ty, priority):
+    # 获取文档的解析器配置
     chunking_config = DocumentService.get_chunking_config(doc["id"])
     hasher = xxhash.xxh64()
     for field in sorted(chunking_config.keys()):
@@ -639,7 +644,12 @@ def get_queue_length(priority):
     group_info = REDIS_CONN.queue_info(get_svr_queue_name(priority), SVR_CONSUMER_GROUP_NAME)
     return int(group_info.get("lag", 0))
 
-
+# 上传文件并解析
+# 1. 上传文件，上传文件到文件存储系统，并创建文件信息对象（MISO）。同时生产文件缩略图，并上传到文件存储系统（MISO）
+# 2. 根据文件类型匹配解析器，解析文件，生产切片（Chunk）
+# 3. 根据Chunk生成思维导图
+# 4. 把思维导读作为一个切片（Chunk），和文档的  切片结果（Chunks），转换为向量（Vectors）
+# 5. 将切片结果添加到elasticsearch中
 def doc_upload_and_parse(conversation_id, file_objs, user_id):
     from api.db.services.api_service import API4ConversationService
     from api.db.services.conversation_service import ConversationService
@@ -649,28 +659,37 @@ def doc_upload_and_parse(conversation_id, file_objs, user_id):
     from api.db.services.user_service import TenantService
     from rag.app import audio, email, naive, picture, presentation
 
+    # 根据conversation_id获取会话信息
     e, conv = ConversationService.get_by_id(conversation_id)
     if not e:
         e, conv = API4ConversationService.get_by_id(conversation_id)
     assert e, "Conversation not found!"
 
+    # 根据会话信息获取对话信息
     e, dia = DialogService.get_by_id(conv.dialog_id)
+    # 根据对话信息获取知识库信息
     if not dia.kb_ids:
         raise LookupError("No knowledge base associated with this conversation. "
                           "Please add a knowledge base before uploading documents")
+    # 根据对话信息获取知识库ID
     kb_id = dia.kb_ids[0]
+    # 根据知识库ID获取知识库信息
     e, kb = KnowledgebaseService.get_by_id(kb_id)
     if not e:
         raise LookupError("Can't find this knowledgebase!")
 
+    # 根据知识库配置获取Embedding模型实例
+    # tenant_id是租户信息，embd_id是Embedding模型ID，lang是语言
     embd_mdl = LLMBundle(kb.tenant_id, LLMType.EMBEDDING, llm_name=kb.embd_id, lang=kb.language)
 
+    # 上传文件
     err, files = FileService.upload_document(kb, file_objs, user_id)
     assert not err, "\n".join(err)
 
     def dummy(prog=None, msg=""):
         pass
 
+    # 根据文件类型获取解析器
     FACTORY = {
         ParserType.PRESENTATION.value: presentation,
         ParserType.PICTURE.value: picture,
@@ -680,9 +699,10 @@ def doc_upload_and_parse(conversation_id, file_objs, user_id):
     parser_config = {"chunk_token_num": 4096, "delimiter": "\n!?;。；！？", "layout_recognize": "Plain Text"}
     exe = ThreadPoolExecutor(max_workers=12)
     threads = []
+    # 文档名称
     doc_nm = {}
     for d, blob in files:
-        doc_nm[d["id"]] = d["name"]
+        doc_nm[d["id"]] = d["name"] # 文档ID和文档名称
     for d, blob in files:
         kwargs = {
             "callback": dummy,
@@ -692,6 +712,7 @@ def doc_upload_and_parse(conversation_id, file_objs, user_id):
             "tenant_id": kb.tenant_id,
             "lang": kb.language
         }
+        # 提交任务，调用解析器的chunk方法，解析器是根据文件类型获取的
         threads.append(exe.submit(FACTORY.get(d["parser_id"], naive).chunk, d["name"], blob, **kwargs))
 
     for (docinfo, _), th in zip(files, threads):
@@ -700,17 +721,21 @@ def doc_upload_and_parse(conversation_id, file_objs, user_id):
             "doc_id": docinfo["id"],
             "kb_id": [kb.id]
         }
+        # 获取解析结果，解析结果是列表，每个元素是一个字典，字典的键是解析结果的键，值是解析结果的值
         for ck in th.result():
+            # 创建切片信息对象d，从doc对象赋值知识库id和文档id
             d = deepcopy(doc)
             d.update(ck)
             d["id"] = xxhash.xxh64((ck["content_with_weight"] + str(d["doc_id"])).encode("utf-8")).hexdigest()
             d["create_time"] = str(datetime.now()).replace("T", " ")[:19]
             d["create_timestamp_flt"] = datetime.now().timestamp()
+            # 如果解析结果中没有图片，则将切片结果添加到docs中
             if not d.get("image"):
                 docs.append(d)
                 continue
 
             output_buffer = BytesIO()
+            # 如果解析结果中包含图片，则将图片保存到文件存储系统
             if isinstance(d["image"], bytes):
                 output_buffer = BytesIO(d["image"])
             else:
@@ -726,33 +751,57 @@ def doc_upload_and_parse(conversation_id, file_objs, user_id):
     chunk_counts = {id: 0 for id in docids}
     token_counts = {id: 0 for id in docids}
     es_bulk_size = 64
-
+  
     def embedding(doc_id, cnts, batch_size=16):
         nonlocal embd_mdl, chunk_counts, token_counts
         vects = []
         for i in range(0, len(cnts), batch_size):
+            # 调用Embedding模型，将解析结果转换为向量
             vts, c = embd_mdl.encode(cnts[i: i + batch_size])
             vects.extend(vts.tolist())
             chunk_counts[doc_id] += len(cnts[i:i + batch_size])
             token_counts[doc_id] += c
         return vects
 
+    # 创建索引
     idxnm = search.index_name(kb.tenant_id)
     try_create_idx = True
 
+    # 获取租户信息
     _, tenant = TenantService.get_by_id(kb.tenant_id)
+    # 创建LLM模型实例，通过Chat模型创建思维导读
     llm_bdl = LLMBundle(kb.tenant_id, LLMType.CHAT, tenant.llm_id)
+    # 遍历文档ID
     for doc_id in docids:
+        # 获取文档ID对应的切片对象列表
         cks = [c for c in docs if c["doc_id"] == doc_id]
 
+        # 如果解析结果中没有图片，则生成思维导图
+        # 思维导图提供文档的全局结构
+        # mind_map = {
+        #    "主题": "人工智能技术",
+        #    "子主题": [
+        #        {"名称": "机器学习", "内容": "包括监督学习、无监督学习..."},
+        #        {"名称": "深度学习", "内容": "神经网络、CNN、RNN..."},
+        #        {"名称": "自然语言处理", "内容": "文本分类、机器翻译..."}
+        #    ]
+        # }
+        # 好处: 
+        #  1. 补充局部信息: 原始切片只包含局部细节，思维导图提供全局概览
+        #  2. 主题关联: 帮助理解不同切片之间的主题关联
+        #  3. 层次结构: 提供文档的层次化组织结构
         if parser_ids[doc_id] != ParserType.PICTURE.value:
             from graphrag.general.mind_map_extractor import MindMapExtractor
+            # 创建思维导图提取器实例
             mindmap = MindMapExtractor(llm_bdl)
             try:
+                # 调用思维导图提取器，生成思维导图
                 mind_map = trio.run(mindmap, [c["content_with_weight"] for c in docs if c["doc_id"] == doc_id])
+                # 将思维导图转换为JSON格式
                 mind_map = json.dumps(mind_map.output, ensure_ascii=False, indent=2)
                 if len(mind_map) < 32:
                     raise Exception("Few content: " + mind_map)
+                # 将思维导图添加到切片结果中（此时cks中包含原有文档的切片结果和思维导图）
                 cks.append({
                     "id": get_uuid(),
                     "doc_id": doc_id,
@@ -766,16 +815,20 @@ def doc_upload_and_parse(conversation_id, file_objs, user_id):
             except Exception as e:
                 logging.exception("Mind map generation error")
 
+        # 将切片结果转换为向量
         vects = embedding(doc_id, [c["content_with_weight"] for c in cks])
         assert len(cks) == len(vects)
         for i, d in enumerate(cks):
             v = vects[i]
+            # 将向量添加到切片结果d中
             d["q_%d_vec" % len(v)] = v
         for b in range(0, len(cks), es_bulk_size):
             if try_create_idx:
+                # docStoreConn是elasticsearch连接，indexExist是检查索引是否存在，createIdx是创建索引，insert是插入数据
                 if not settings.docStoreConn.indexExist(idxnm, kb_id):
                     settings.docStoreConn.createIdx(idxnm, kb_id, len(vects[0]))
                 try_create_idx = False
+            # 数据获取方式：cks[b:b + es_bulk_size]，将切片结果列表中的切片结果按照es_bulk_size各大小批量添加到elasticsearch中
             settings.docStoreConn.insert(cks[b:b + es_bulk_size], idxnm, kb_id)
 
         DocumentService.increment_chunk_num(

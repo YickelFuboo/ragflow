@@ -472,6 +472,7 @@ async def run_raptor(row, chat_mdl, embd_mdl, vector_size, callback=None):
     await is_strong_enough(chat_mdl, embd_mdl)
     chunks = []
     vctr_nm = "q_%d_vec"%vector_size
+    # 获取文档的切片结果
     for d in settings.retrievaler.chunk_list(row["doc_id"], row["tenant_id"], [str(row["kb_id"])],
                                              fields=["content_with_weight", vctr_nm]):
         chunks.append((d["content_with_weight"], np.array(d[vctr_nm])))
@@ -485,7 +486,9 @@ async def run_raptor(row, chat_mdl, embd_mdl, vector_size, callback=None):
         row["parser_config"]["raptor"]["threshold"]
     )
     original_length = len(chunks)
+    # 运行RAPTOR，入参chunks是文档的切片结果，row["parser_config"]["raptor"]["random_seed"]是随机种子，callback是进度回调函数
     chunks = await raptor(chunks, row["parser_config"]["raptor"]["random_seed"], callback)
+    # 创建文档信息对象
     doc = {
         "doc_id": row["doc_id"],
         "kb_id": [str(row["kb_id"])],
@@ -556,10 +559,11 @@ async def do_handle_task(task):
 
     # Either using RAPTOR or Standard chunking methods
     if task.get("task_type", "") == "raptor":
-        # bind LLM for raptor
+        # 根据配置创建LLM模型实例
         chat_model = LLMBundle(task_tenant_id, LLMType.CHAT, llm_name=task_llm_id, lang=task_language)
+        # 检查LLM模型是否足够强大
         await is_strong_enough(chat_model, None)
-        # run RAPTOR
+        # 运行RAPTOR，入参task是任务信息对象，chat_model是LLM模型实例，embedding_model是Embedding模型实例，vector_size是向量大小，progress_callback是进度回调函数
         async with kg_limiter:
             chunks, token_count = await run_raptor(task, chat_model, embedding_model, vector_size, progress_callback)
     # Either using graphrag or Standard chunking methods
@@ -569,10 +573,13 @@ async def do_handle_task(task):
             return
         graphrag_conf = task["kb_parser_config"].get("graphrag", {})
         start_ts = timer()
+        # 根据配置创建LLM模型实例
         chat_model = LLMBundle(task_tenant_id, LLMType.CHAT, llm_name=task_llm_id, lang=task_language)
+        # 检查LLM模型是否足够强大
         await is_strong_enough(chat_model, None)
         with_resolution = graphrag_conf.get("resolution", False)
         with_community = graphrag_conf.get("community", False)
+        # 运行GraphRAG，入参task是任务信息对象，task_language是任务语言，with_resolution是是否使用分辨率，with_community是是否使用社区，chat_model是LLM模型实例，embedding_model是Embedding模型实例，progress_callback是进度回调函数
         async with kg_limiter:
             await run_graphrag(task, task_language, with_resolution, with_community, chat_model, embedding_model, progress_callback)
         progress_callback(prog=1.0, msg="Knowledge Graph done ({:.2f}s)".format(timer() - start_ts))
@@ -615,6 +622,7 @@ async def do_handle_task(task):
             raise
 
     for b in range(0, len(chunks), DOC_BULK_SIZE):
+        # 将切片结果添加到elasticsearch中
         doc_store_result = await trio.to_thread.run_sync(lambda: settings.docStoreConn.insert(chunks[b:b + DOC_BULK_SIZE], search.index_name(task_tenant_id), task_dataset_id))
         task_canceled = has_canceled(task_id)
         if task_canceled:

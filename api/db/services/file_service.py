@@ -399,66 +399,128 @@ class FileService(CommonService):
             logging.exception("move_file")
             raise RuntimeError("Database error (File move)!")
 
-    @classmethod
-    @DB.connection_context()
     def upload_document(self, kb, file_objs, user_id):
+        """
+        上传文档到知识库的核心方法
+        
+        Args:
+            kb: 知识库对象，包含知识库的基本信息（如ID、租户ID、解析器配置等）
+            file_objs: 文件对象列表，用户上传的文件（werkzeug.datastructures.FileStorage对象）
+            user_id: 用户ID，用于权限验证和文件夹管理
+            
+        Returns:
+            tuple: (err, files)
+                - err: 处理失败的文件错误信息列表
+                - files: 成功处理的文件信息列表，每个元素为(doc_info, blob)元组
+        """
+        # 步骤1: 初始化文件夹结构
+        # 获取用户的根文件夹，用于存储所有文件
         root_folder = self.get_root_folder(user_id)
         pf_id = root_folder["id"]
+        
+        # 初始化知识库文档文件夹，确保文件夹结构存在
         self.init_knowledgebase_docs(pf_id, user_id)
+        
+        # 获取知识库根文件夹
         kb_root_folder = self.get_kb_folder(user_id)
+        
+        # 为当前知识库创建新的文件夹，用于存储该知识库的文档
         kb_folder = self.new_a_file_from_kb(kb.tenant_id, kb.name, kb_root_folder["id"])
 
-        err, files = [], []
+        # 步骤2: 初始化结果变量
+        err, files = [], []  # err存储错误信息，files存储成功处理的文件
+        
+        # 步骤3: 逐个处理上传的文件
         for file in file_objs:
             try:
+                # 步骤3.1: 检查文件数量限制
+                # 获取每个用户最大文件数量限制，0表示无限制
                 MAX_FILE_NUM_PER_USER = int(os.environ.get("MAX_FILE_NUM_PER_USER", 0))
                 if MAX_FILE_NUM_PER_USER > 0 and DocumentService.get_doc_count(kb.tenant_id) >= MAX_FILE_NUM_PER_USER:
                     raise RuntimeError("Exceed the maximum file number of a free user!")
+                
+                # 步骤3.2: 检查文件名长度限制
+                # 确保文件名不超过字节长度限制
                 if len(file.filename.encode("utf-8")) > FILE_NAME_LEN_LIMIT:
                     raise RuntimeError(f"File name must be {FILE_NAME_LEN_LIMIT} bytes or less.")
 
+                # 步骤3.3: 处理文件名重复
+                # 如果存在同名文件，自动添加序号避免冲突
                 filename = duplicate_name(DocumentService.query, name=file.filename, kb_id=kb.id)
+                
+                # 步骤3.4: 识别文件类型
+                # 根据文件扩展名判断文件类型
                 filetype = filename_type(filename)
                 if filetype == FileType.OTHER.value:
                     raise RuntimeError("This type of file has not been supported yet!")
 
+                # 步骤3.5: 生成存储位置
+                # 使用文件名作为存储位置，如果已存在则添加下划线
                 location = filename
                 while STORAGE_IMPL.obj_exist(kb.id, location):
                     location += "_"
 
+                # 步骤3.6: 读取文件内容
+                # 读取文件的二进制内容
                 blob = file.read()
+                
+                # 步骤3.7: 特殊处理PDF文件
+                # 如果是PDF文件，尝试修复可能损坏的PDF
                 if filetype == FileType.PDF.value:
                     blob = read_potential_broken_pdf(blob)
+                
+                # 步骤3.8: 存储文件到对象存储
+                # 将文件内容存储到对象存储系统（如MinIO）
                 STORAGE_IMPL.put(kb.id, location, blob)
 
+                # 步骤3.9: 生成文档ID
+                # 为文档生成唯一的UUID
                 doc_id = get_uuid()
 
+                # 步骤3.10: 生成缩略图
+                # 根据文件类型生成缩略图（如PDF首页、图片缩略图等）
                 img = thumbnail_img(filename, blob)
                 thumbnail_location = ""
                 if img is not None:
+                    # 如果成功生成缩略图，存储到对象存储
                     thumbnail_location = f"thumbnail_{doc_id}.png"
                     STORAGE_IMPL.put(kb.id, thumbnail_location, img)
 
+                # 步骤3.11: 构建文档元数据
+                # 创建包含文档所有信息的字典
                 doc = {
-                    "id": doc_id,
-                    "kb_id": kb.id,
-                    "parser_id": self.get_parser(filetype, filename, kb.parser_id),
-                    "parser_config": kb.parser_config,
-                    "created_by": user_id,
-                    "type": filetype,
-                    "name": filename,
-                    "suffix": Path(filename).suffix.lstrip("."),
-                    "location": location,
-                    "size": len(blob),
-                    "thumbnail": thumbnail_location,
+                    "id": doc_id,                    # 文档唯一ID
+                    "kb_id": kb.id,                  # 知识库ID
+                    "parser_id": self.get_parser(filetype, filename, kb.parser_id),  # 解析器类型
+                    "parser_config": kb.parser_config,  # 解析器配置
+                    "created_by": user_id,           # 创建者ID
+                    "type": filetype,                # 文件类型
+                    "name": filename,                # 文件名
+                    "suffix": Path(filename).suffix.lstrip("."),  # 文件扩展名
+                    "location": location,            # 存储位置
+                    "size": len(blob),              # 文件大小（字节）
+                    "thumbnail": thumbnail_location, # 缩略图位置
                 }
+                
+                # 步骤3.12: 保存文档元数据到数据库
+                # 将文档信息插入到数据库的Document表中
                 DocumentService.insert(doc)
 
+                # 步骤3.13: 建立文件与文件夹的关联
+                # 将文档添加到知识库文件夹中，建立文件系统结构
                 FileService.add_file_from_kb(doc, kb_folder["id"], kb.tenant_id)
+                
+                # 步骤3.14: 添加到成功列表
+                # 将文档信息和文件内容添加到成功处理列表
                 files.append((doc, blob))
+                
             except Exception as e:
+                # 步骤3.15: 错误处理
+                # 如果处理过程中出现异常，记录错误信息
                 err.append(file.filename + ": " + str(e))
 
+        # 步骤4: 返回处理结果
+        # 返回错误列表和成功处理的文件列表
         return err, files
 
     @staticmethod

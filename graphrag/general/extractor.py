@@ -98,30 +98,55 @@ class Extractor:
         self, doc_id: str, chunks: list[str],
             callback: Callable | None = None
     ):
-
+        """
+        知识图谱提取器的主要调用方法
+        
+        Args:
+            doc_id: 文档ID
+            chunks: 文档切片列表
+            callback: 进度回调函数
+            
+        Returns:
+            all_entities_data: 合并后的实体列表
+            all_relationships_data: 合并后的关系列表
+        """
+        # 设置回调函数，用于报告处理进度
         self.callback = callback
         start_ts = trio.current_time()
         out_results = []
+        
+        # 并发处理每个文档切片，提取实体和关系
         async with trio.open_nursery() as nursery:
             for i, ck in enumerate(chunks):
+                # 截断切片内容，确保不超过LLM的最大长度限制
                 ck = truncate(ck, int(self._llm.max_length*0.8))
+                # 异步启动单个内容的处理任务
                 nursery.start_soon(self._process_single_content, (doc_id, ck), i, len(chunks), out_results)
 
-        maybe_nodes = defaultdict(list)
-        maybe_edges = defaultdict(list)
-        sum_token_count = 0
+        # 合并所有切片提取的结果
+        maybe_nodes = defaultdict(list)  # 存储所有实体，按实体名称分组
+        maybe_edges = defaultdict(list)  # 存储所有关系，按实体对分组
+        sum_token_count = 0  # 统计总token消耗
+        
+        # 遍历每个切片的提取结果
         for m_nodes, m_edges, token_count in out_results:
+            # 将实体按名称合并
             for k, v in m_nodes.items():
                 maybe_nodes[k].extend(v)
+            # 将关系按实体对合并，确保实体对顺序一致
             for k, v in m_edges.items():
                 maybe_edges[tuple(sorted(k))].extend(v)
             sum_token_count += token_count
+            
         now = trio.current_time()
         if callback:
             callback(msg = f"Entities and relationships extraction done, {len(maybe_nodes)} nodes, {len(maybe_edges)} edges, {sum_token_count} tokens, {now-start_ts:.2f}s.")
+        
+        # 第二阶段：实体合并
         start_ts = now
         logging.info("Entities merging...")
         all_entities_data = []
+        # 并发合并相同名称的实体
         async with trio.open_nursery() as nursery:
             for en_nm, ents in maybe_nodes.items():
                 nursery.start_soon(self._merge_nodes, en_nm, ents, all_entities_data)
@@ -129,9 +154,11 @@ class Extractor:
         if callback:
             callback(msg = f"Entities merging done, {now-start_ts:.2f}s.")
 
+        # 第三阶段：关系合并
         start_ts = now
         logging.info("Relationships merging...")
         all_relationships_data = []
+        # 并发合并相同实体对的关系
         async with trio.open_nursery() as nursery:
             for (src, tgt), rels in maybe_edges.items():
                 nursery.start_soon(self._merge_edges, src, tgt, rels, all_relationships_data)
@@ -139,16 +166,19 @@ class Extractor:
         if callback:
             callback(msg = f"Relationships merging done, {now-start_ts:.2f}s.")
 
+        # 检查提取结果，如果没有提取到任何实体和关系，发出警告
         if not len(all_entities_data) and not len(all_relationships_data):
             logging.warning(
                 "Didn't extract any entities and relationships, maybe your LLM is not working"
             )
 
+        # 分别检查实体和关系的提取情况
         if not len(all_entities_data):
             logging.warning("Didn't extract any entities")
         if not len(all_relationships_data):
             logging.warning("Didn't extract any relationships")
 
+        # 返回最终的实体和关系列表
         return all_entities_data, all_relationships_data
 
     async def _merge_nodes(self, entity_name: str, entities: list[dict], all_relationships_data):

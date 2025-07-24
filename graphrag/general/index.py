@@ -138,11 +138,14 @@ async def generate_subgraph(
     embed_bdl,
     callback,
 ):
+    # 检查文档是否已经包含在知识图谱中
     contains = await does_graph_contains(tenant_id, kb_id, doc_id)
     if contains:
         callback(msg=f"Graph already contains {doc_id}")
         return None
     start = trio.current_time()
+    
+    # 调用GraphExtractor，生成子图
     ext = extractor(
         llm_bdl,
         language=language,
