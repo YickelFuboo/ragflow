@@ -496,61 +496,103 @@ def fill_db_model_object(model_object, human_model_dict):
     return model_object
 
 
+# 用户模型类，继承自DataBaseModel和UserMixin
 class User(DataBaseModel, UserMixin):
+    # 用户唯一标识符，主键
     id = CharField(max_length=32, primary_key=True)
+    # 用户访问令牌
     access_token = CharField(max_length=255, null=True, index=True)
+    # 用户昵称
     nickname = CharField(max_length=100, null=False, help_text="nicky name", index=True)
+    # 用户密码
     password = CharField(max_length=255, null=True, help_text="password", index=True)
+    # 用户邮箱地址
     email = CharField(max_length=255, null=False, help_text="email", index=True)
+    # 用户头像，Base64编码字符串
     avatar = TextField(null=True, help_text="avatar base64 string")
+    # 用户语言设置，默认为中文或英文
     language = CharField(max_length=32, null=True, help_text="English|Chinese", default="Chinese" if "zh_CN" in os.getenv("LANG", "") else "English", index=True)
+    # 用户颜色主题设置
     color_schema = CharField(max_length=32, null=True, help_text="Bright|Dark", default="Bright", index=True)
+    # 用户时区设置
     timezone = CharField(max_length=64, null=True, help_text="Timezone", default="UTC+8\tAsia/Shanghai", index=True)
+    # 用户最后登录时间
     last_login_time = DateTimeField(null=True, index=True)
+    # 用户是否已认证
     is_authenticated = CharField(max_length=1, null=False, default="1", index=True)
+    # 用户是否激活
     is_active = CharField(max_length=1, null=False, default="1", index=True)
+    # 用户是否匿名
     is_anonymous = CharField(max_length=1, null=False, default="0", index=True)
+    # 用户登录渠道
     login_channel = CharField(null=True, help_text="from which user login", index=True)
+    # 用户状态，1表示有效，0表示无效
     status = CharField(max_length=1, null=True, help_text="is it validate(0: wasted, 1: validate)", default="1", index=True)
+    # 用户是否为超级管理员
     is_superuser = BooleanField(null=True, help_text="is root", default=False, index=True)
 
+    # 返回用户邮箱作为字符串表示
     def __str__(self):
         return self.email
 
+    # 获取用户JWT令牌
     def get_id(self):
         jwt = Serializer(secret_key=settings.SECRET_KEY)
         return jwt.dumps(str(self.access_token))
 
+    # 数据库表元数据
     class Meta:
         db_table = "user"
 
 
+# 租户模型类
 class Tenant(DataBaseModel):
+    # 租户唯一标识符，主键
     id = CharField(max_length=32, primary_key=True)
+    # 租户名称
     name = CharField(max_length=100, null=True, help_text="Tenant name", index=True)
+    # 租户公钥
     public_key = CharField(max_length=255, null=True, index=True)
+    # 默认聊天模型ID
     llm_id = CharField(max_length=128, null=False, help_text="default llm ID", index=True)
+    # 默认嵌入模型ID
     embd_id = CharField(max_length=128, null=False, help_text="default embedding model ID", index=True)
+    # 默认语音识别模型ID
     asr_id = CharField(max_length=128, null=False, help_text="default ASR model ID", index=True)
+    # 默认图像转文本模型ID
     img2txt_id = CharField(max_length=128, null=False, help_text="default image to text model ID", index=True)
+    # 默认重排序模型ID
     rerank_id = CharField(max_length=128, null=False, help_text="default rerank model ID", index=True)
+    # 默认语音合成模型ID
     tts_id = CharField(max_length=256, null=True, help_text="default tts model ID", index=True)
+    # 文档处理器ID列表
     parser_ids = CharField(max_length=256, null=False, help_text="document processors", index=True)
+    # 租户信用额度
     credit = IntegerField(default=512, index=True)
+    # 租户状态，1表示有效，0表示无效
     status = CharField(max_length=1, null=True, help_text="is it validate(0: wasted, 1: validate)", default="1", index=True)
 
+    # 数据库表元数据
     class Meta:
         db_table = "tenant"
 
 
+# 用户租户关联模型类
 class UserTenant(DataBaseModel):
+    # 关联记录唯一标识符，主键
     id = CharField(max_length=32, primary_key=True)
+    # 用户ID
     user_id = CharField(max_length=32, null=False, index=True)
+    # 租户ID
     tenant_id = CharField(max_length=32, null=False, index=True)
+    # 用户在租户中的角色
     role = CharField(max_length=32, null=False, help_text="UserTenantRole", index=True)
+    # 邀请人ID
     invited_by = CharField(max_length=32, null=False, index=True)
+    # 关联状态，1表示有效，0表示无效
     status = CharField(max_length=1, null=True, help_text="is it validate(0: wasted, 1: validate)", default="1", index=True)
 
+    # 数据库表元数据
     class Meta:
         db_table = "user_tenant"
 
@@ -567,145 +609,239 @@ class InvitationCode(DataBaseModel):
         db_table = "invitation_code"
 
 
+# LLM工厂模型类
 class LLMFactories(DataBaseModel):
+    # LLM工厂名称，主键
     name = CharField(max_length=128, null=False, help_text="LLM factory name", primary_key=True)
+    # LLM工厂logo，Base64编码
     logo = TextField(null=True, help_text="llm logo base64")
+    # LLM工厂标签，如LLM、Text Embedding、Image2Text、ASR
     tags = CharField(max_length=255, null=False, help_text="LLM, Text Embedding, Image2Text, ASR", index=True)
+    # 工厂状态，1表示有效，0表示无效
     status = CharField(max_length=1, null=True, help_text="is it validate(0: wasted, 1: validate)", default="1", index=True)
 
+    # 返回工厂名称作为字符串表示
     def __str__(self):
         return self.name
 
+    # 数据库表元数据
     class Meta:
         db_table = "llm_factories"
 
 
+# LLM模型类
 class LLM(DataBaseModel):
-    # LLMs dictionary
+    # LLM模型名称
     llm_name = CharField(max_length=128, null=False, help_text="LLM name", index=True)
+    # 模型类型，如LLM、Text Embedding、Image2Text、ASR
     model_type = CharField(max_length=128, null=False, help_text="LLM, Text Embedding, Image2Text, ASR", index=True)
+    # 所属工厂ID
     fid = CharField(max_length=128, null=False, help_text="LLM factory id", index=True)
+    # 最大token数量
     max_tokens = IntegerField(default=0)
 
+    # 模型标签，如LLM、Text Embedding、Image2Text、Chat、32k等
     tags = CharField(max_length=255, null=False, help_text="LLM, Text Embedding, Image2Text, Chat, 32k...", index=True)
+    # 是否支持工具调用
     is_tools = BooleanField(null=False, help_text="support tools", default=False)
+    # 模型状态，1表示有效，0表示无效
     status = CharField(max_length=1, null=True, help_text="is it validate(0: wasted, 1: validate)", default="1", index=True)
 
+    # 返回模型名称作为字符串表示
     def __str__(self):
         return self.llm_name
 
+    # 数据库表元数据，使用复合主键
     class Meta:
         primary_key = CompositeKey("fid", "llm_name")
         db_table = "llm"
 
 
+# 租户LLM配置模型类
 class TenantLLM(DataBaseModel):
+    # 租户ID
     tenant_id = CharField(max_length=32, null=False, index=True)
+    # LLM工厂名称
     llm_factory = CharField(max_length=128, null=False, help_text="LLM factory name", index=True)
+    # 模型类型
     model_type = CharField(max_length=128, null=True, help_text="LLM, Text Embedding, Image2Text, ASR", index=True)
+    # LLM模型名称
     llm_name = CharField(max_length=128, null=True, help_text="LLM name", default="", index=True)
+    # API密钥
     api_key = CharField(max_length=2048, null=True, help_text="API KEY", index=True)
+    # API基础URL
     api_base = CharField(max_length=255, null=True, help_text="API Base")
+    # 最大token数量
     max_tokens = IntegerField(default=8192, index=True)
+    # 已使用token数量
     used_tokens = IntegerField(default=0, index=True)
 
+    # 返回模型名称作为字符串表示
     def __str__(self):
         return self.llm_name
 
+    # 数据库表元数据，使用复合主键
     class Meta:
         db_table = "tenant_llm"
         primary_key = CompositeKey("tenant_id", "llm_factory", "llm_name")
 
 
+# 租户Langfuse配置模型类
 class TenantLangfuse(DataBaseModel):
+    # 租户ID，主键
     tenant_id = CharField(max_length=32, null=False, primary_key=True)
+    # 密钥
     secret_key = CharField(max_length=2048, null=False, help_text="SECRET KEY", index=True)
+    # 公钥
     public_key = CharField(max_length=2048, null=False, help_text="PUBLIC KEY", index=True)
+    # 主机地址
     host = CharField(max_length=128, null=False, help_text="HOST", index=True)
 
+    # 返回Langfuse主机信息作为字符串表示
     def __str__(self):
         return "Langfuse host" + self.host
 
+    # 数据库表元数据
     class Meta:
         db_table = "tenant_langfuse"
 
 
+# 知识库模型类
 class Knowledgebase(DataBaseModel):
+    # 知识库唯一标识符，主键
     id = CharField(max_length=32, primary_key=True)
+    # 知识库头像，Base64编码
     avatar = TextField(null=True, help_text="avatar base64 string")
+    # 所属租户ID
     tenant_id = CharField(max_length=32, null=False, index=True)
+    # 知识库名称
     name = CharField(max_length=128, null=False, help_text="KB name", index=True)
+    # 知识库语言，默认为中文或英文
     language = CharField(max_length=32, null=True, default="Chinese" if "zh_CN" in os.getenv("LANG", "") else "English", help_text="English|Chinese", index=True)
+    # 知识库描述
     description = TextField(null=True, help_text="KB description")
+    # 默认嵌入模型ID
     embd_id = CharField(max_length=128, null=False, help_text="default embedding model ID", index=True)
+    # 权限设置，me表示个人，team表示团队
     permission = CharField(max_length=16, null=False, help_text="me|team", default="me", index=True)
+    # 创建者ID
     created_by = CharField(max_length=32, null=False, index=True)
+    # 文档数量
     doc_num = IntegerField(default=0, index=True)
+    # token数量
     token_num = IntegerField(default=0, index=True)
+    # 分块数量
     chunk_num = IntegerField(default=0, index=True)
+    # 相似度阈值
     similarity_threshold = FloatField(default=0.2, index=True)
+    # 向量相似度权重
     vector_similarity_weight = FloatField(default=0.3, index=True)
 
+    # 默认解析器ID
     parser_id = CharField(max_length=32, null=False, help_text="default parser ID", default=ParserType.NAIVE.value, index=True)
+    # 解析器配置，JSON格式
     parser_config = JSONField(null=False, default={"pages": [[1, 1000000]]})
+    # 页面排名
     pagerank = IntegerField(default=0, index=False)
+    # 知识库状态，1表示有效，0表示无效
     status = CharField(max_length=1, null=True, help_text="is it validate(0: wasted, 1: validate)", default="1", index=True)
 
+    # 返回知识库名称作为字符串表示
     def __str__(self):
         return self.name
 
+    # 数据库表元数据
     class Meta:
         db_table = "knowledgebase"
 
 
+# 文档模型类
 class Document(DataBaseModel):
+    # 文档唯一标识符，主键
     id = CharField(max_length=32, primary_key=True)
+    # 文档缩略图，Base64编码
     thumbnail = TextField(null=True, help_text="thumbnail base64 string")
+    # 所属知识库ID
     kb_id = CharField(max_length=256, null=False, index=True)
+    # 解析器ID
     parser_id = CharField(max_length=32, null=False, help_text="default parser ID", index=True)
+    # 解析器配置，JSON格式
     parser_config = JSONField(null=False, default={"pages": [[1, 1000000]]})
+    # 文档来源类型，默认为本地
     source_type = CharField(max_length=128, null=False, default="local", help_text="where dose this document come from", index=True)
+    # 文档类型，文件扩展名
     type = CharField(max_length=32, null=False, help_text="file extension", index=True)
+    # 创建者ID
     created_by = CharField(max_length=32, null=False, help_text="who created it", index=True)
+    # 文档名称
     name = CharField(max_length=255, null=True, help_text="file name", index=True)
+    # 文档存储位置
     location = CharField(max_length=255, null=True, help_text="where dose it store", index=True)
+    # 文档大小
     size = IntegerField(default=0, index=True)
+    # token数量
     token_num = IntegerField(default=0, index=True)
+    # 分块数量
     chunk_num = IntegerField(default=0, index=True)
+    # 处理进度
     progress = FloatField(default=0, index=True)
+    # 处理进度消息
     progress_msg = TextField(null=True, help_text="process message", default="")
+    # 处理开始时间
     process_begin_at = DateTimeField(null=True, index=True)
+    # 处理持续时间
     process_duration = FloatField(default=0)
+    # 元数据字段，JSON格式
     meta_fields = JSONField(null=True, default={})
+    # 真实文件扩展名后缀
     suffix = CharField(max_length=32, null=False, help_text="The real file extension suffix", index=True)
 
+    # 运行状态，1表示开始处理，2表示取消，0表示未开始
     run = CharField(max_length=1, null=True, help_text="start to run processing or cancel.(1: run it; 2: cancel)", default="0", index=True)
+    # 文档状态，1表示有效，0表示无效
     status = CharField(max_length=1, null=True, help_text="is it validate(0: wasted, 1: validate)", default="1", index=True)
 
+    # 数据库表元数据
     class Meta:
         db_table = "document"
 
 
+# 文件模型类
 class File(DataBaseModel):
+    # 文件唯一标识符，主键
     id = CharField(max_length=32, primary_key=True)
+    # 父文件夹ID
     parent_id = CharField(max_length=32, null=False, help_text="parent folder id", index=True)
+    # 所属租户ID
     tenant_id = CharField(max_length=32, null=False, help_text="tenant id", index=True)
+    # 创建者ID
     created_by = CharField(max_length=32, null=False, help_text="who created it", index=True)
+    # 文件或文件夹名称
     name = CharField(max_length=255, null=False, help_text="file name or folder name", index=True)
+    # 文件存储位置
     location = CharField(max_length=255, null=True, help_text="where dose it store", index=True)
+    # 文件大小
     size = IntegerField(default=0, index=True)
+    # 文件类型，扩展名
     type = CharField(max_length=32, null=False, help_text="file extension", index=True)
+    # 文件来源类型
     source_type = CharField(max_length=128, null=False, default="", help_text="where dose this document come from", index=True)
 
+    # 数据库表元数据
     class Meta:
         db_table = "file"
 
 
+# 文件到文档关联模型类
 class File2Document(DataBaseModel):
+    # 关联记录唯一标识符，主键
     id = CharField(max_length=32, primary_key=True)
+    # 文件ID
     file_id = CharField(max_length=32, null=True, help_text="file id", index=True)
+    # 文档ID
     document_id = CharField(max_length=32, null=True, help_text="document id", index=True)
 
+    # 数据库表元数据
     class Meta:
         db_table = "file2document"
 
